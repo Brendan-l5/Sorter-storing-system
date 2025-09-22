@@ -1,0 +1,79 @@
+import swift
+import roboticstoolbox as rtb
+from spatialmath import SE3
+from ir_support import UR3
+from math import pi
+import spatialgeometry as geometry
+import numpy as np
+from roboticstoolbox import DHLink, DHRobot
+import keyboard
+import time
+
+env = swift.Swift()
+env.launch()
+
+r1 = UR3()
+r1.base = r1.base * SE3(0,0,0)
+
+r1.add_to_env(env)
+
+# create first box placement zones
+red_zone = geometry.Cuboid(scale=[0.7, 0.3, 0.01], pose=SE3(0, 0.4, 0.001), color=(1, 0, 0, 0.5))
+env.add(red_zone)
+blue_zone = geometry.Cuboid(scale=[0.7, 0.3, 0.01], pose=SE3(0, -0.4, 0.001), color=(0, 0, 1, 0.5))
+env.add(blue_zone)
+
+# Create coloured boxes to pick and place
+boxes = []
+boxes_pos = []
+for i in range(6):
+    initial_pose = SE3(0.4, -0.3 + i*0.12, 0.05)
+    box = geometry.Cuboid(scale=[0.1, 0.1, 0.1], pose=initial_pose, color=(i % 2, 0.0, (i+1) % 2, 1))
+    # first box is blue and alternates
+
+    env.add(box)
+    boxes.append(box)
+    boxes_pos.append(initial_pose)
+
+# generate placement poses
+placement_poses = []
+for i in range(6):
+
+    #alternate between red and blue zones
+    if i % 2 == 0:
+        place_pose = SE3(-0.2 + i*0.1, -0.4, 0.05)
+    else:
+        place_pose = SE3(-0.2 + (i-1)*0.1, 0.4, 0.05)
+    
+    placement_poses.append(place_pose)
+
+steps = 50
+
+for i, pose in enumerate(boxes_pos):
+
+    pickup_pose = pose * SE3(0.0, 0.0, 0.07) * SE3.Rx(pi)
+    place_pose = placement_poses[i] * SE3(0.0, 0.0, 0.07) * SE3.Rx(pi)
+
+    # Solve IK
+    q_pickup = r1.ikine_LM(pickup_pose).q
+    q_placement = r1.ikine_LM(place_pose).q
+
+    # generate trajectory
+    traj_pickup = rtb.jtraj(r1.q, q_pickup, steps).q
+    traj_place = rtb.jtraj(q_pickup, q_placement, steps).q
+
+    for step_idx in range(steps):
+        r1.q = traj_pickup[step_idx]
+        env.step(0.02)
+        time.sleep(0.05)
+    
+    print("\nMoving to box ", i+1, " position", r1.fkine(r1.q).t)
+
+    for step_idx in range(steps):
+        r1.q = traj_place[step_idx]
+        ee_pose = r1.fkine(r1.q)
+        boxes[i].T = ee_pose * SE3(0.0, 0.0, 0.07)
+        env.step(0.02)
+        time.sleep(0.05)
+    
+    print("Placing box ", i+1, " position", r1.fkine(r1.q).t )
