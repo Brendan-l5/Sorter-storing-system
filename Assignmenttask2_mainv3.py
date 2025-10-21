@@ -973,7 +973,7 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             print("\n\n⚠ Operation Interrupted by user")
         except Exception as e:
-            print(f"\n\n❌ Error occurred: {e}")
+            print(f"\n\n Error occurred: {e}")
             import traceback
             traceback.print_exc()
         finally:
