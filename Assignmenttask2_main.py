@@ -15,13 +15,21 @@ import myCobot
 from itertools import combinations
 from spatialgeometry import Sphere
 from spatialmath.base import transl
+import serial # For Arduino communication
 
-
-# ==================== MAIN ROBOT CLASS ====================
+#================================================ SETUP PICK AND PLACE ROBOT ENVIRONMENT ==================================================
 class PickPlaceRobot:
     def __init__(self):
         self.env = swift.Swift()
         self.env.launch()
+
+        try: #check if arduino is connected or not
+            self.arduino = serial.Serial('COM10', 9600, timeout=1)  # COM port depends on which port the arduino is plugged into
+            time.sleep(2)  # Allow time for Arduino reset
+            print("Connected to Arduino")
+        except Exception as e:
+            self.arduino = None
+            print("Could not connect to Arduino: {e}") # CLOSE ARDUINO IDE BEFORE STARTOING PROGRAM
         
         self.r1 = UR3()
         self.r1.base = self.r1.base * SE3(0,0,0)
@@ -38,32 +46,38 @@ class PickPlaceRobot:
         shelf = geometry.Mesh('.venv/At2/shelf.stl', pose=SE3(-0.45, -1.6, 0.48) * SE3.Rx(pi), color=(0.5, 0.3, 0.1, 1), scale=[0.007, 0.002, 0.008])
         self.env.add(shelf)
 
-        fence_data = [(SE3(-0.6, 1.75, 0), [0.02, 0.03, 0.03]),(SE3(-0.3, -1.5, 0), [0.03, 0.03, 0.03]),(SE3(1.1, -0.1, 0) * SE3.Rz(pi / 2), [0.035, 0.03, 0.03]),(SE3(-2.1, -0.1, 0) * SE3.Rz(pi / 2), [0.035, 0.03, 0.03])]
+        fence_data = [(SE3(-0.7, 1.9, 0), [0.02, 0.03, 0.03]),(SE3(-0.3, -1.5, 0), [0.03, 0.03, 0.03]),(SE3(0.9, -0.1, 0) * SE3.Rz(pi / 2), [0.035, 0.03, 0.03]),(SE3(-2.1, -0.5, 0) * SE3.Rz(pi / 2), [0.025, 0.03, 0.03])]
 
         for pose, scale in fence_data:
-            fence = geometry.Mesh('.venv/At1/fence.stl', pose=pose, color=(0.5, 0.5, 0.5, 1), scale=scale)
+            fence = geometry.Mesh('.venv/At2/fence.stl', pose=pose, color=(0.5, 0.5, 0.5, 1), scale=scale)
             self.env.add(fence)
 
-        table = geometry.Mesh('.venv/At1/Table.stl', pose=SE3(-1, 1.9, 0.5) * SE3.Rx(pi), color=(0.5, 0.3, 0.1, 1), scale=[0.015, 0.02, 0.02])
+        table = geometry.Mesh('.venv/At2/Table.stl', pose=SE3(-1, 2, 0.5) * SE3.Rx(pi), color=(0.5, 0.3, 0.1, 1), scale=[0.015, 0.02, 0.02])
         self.env.add(table)
 
-        fire_extinguisher = geometry.Mesh('.venv/At1/Fire_extinguisher.stl', pose=SE3(-6, -6, 0), color=(0.5, 0, 0, 1), scale=[0.06, 0.06, 0.06])
+        fire_extinguisher = geometry.Mesh('.venv/At2/Fire_extinguisher.stl', pose=SE3(-5, -5, 0), color=(0.5, 0, 0, 1), scale=[0.06, 0.06, 0.06])
         self.env.add(fire_extinguisher)
 
-        sign_post = geometry.Cylinder(radius=0.02,length=1.2, pose=SE3(0.35, 1.58, 0.6), color=(0.2, 0.2, 0.2, 1))
+        sign_post = geometry.Cylinder(radius=0.02,length=1.2, pose=SE3(0.35, 1.68, 0.6), color=(0.2, 0.2, 0.2, 1))
         self.env.add(sign_post)
 
-        warning_sign = geometry.Mesh('.venv/At1/Warning_sign.stl', pose=SE3(0.6, 1.6, 1) * SE3.Rx(pi / 2) * SE3.Ry(pi), color=(0.5, 0.5, 0, 1), scale=[0.003, 0.003, 0.003])
+        warning_sign = geometry.Mesh('.venv/At2/Warning_sign.stl', pose=SE3(0.6, 1.7, 1) * SE3.Rx(pi / 2) * SE3.Ry(pi), color=(0.5, 0.5, 0, 1), scale=[0.003, 0.003, 0.003])
         self.env.add(warning_sign)
 
-        button = geometry.Cylinder(radius=0.05, length=0.04, pose=SE3(-0.5, 2.3, 0.52), color=(1.0, 0, 0, 1))
+        button = geometry.Cylinder(radius=0.05, length=0.04, pose=SE3(-0.5, 2.4, 0.52), color=(1.0, 0, 0, 1))
         self.env.add(button)
 
-        button_casing = geometry.Cuboid(scale=[0.12, 0.12, 0.04], pose=SE3(-0.5, 2.3, 0.51), color=(0.1, 0.1, 0.1, 1))
+        button_casing = geometry.Cuboid(scale=[0.12, 0.12, 0.04], pose=SE3(-0.5, 2.4, 0.51), color=(0.1, 0.1, 0.1, 1))
         self.env.add(button_casing)
 
-        person = geometry.Mesh('.venv/At1/person.stl', pose=SE3(-0.4, 2.8, 0), color=(0.7, 0.5, 0.5, 1), scale=[0.08, 0.08, 0.08])
+        person = geometry.Mesh('.venv/At2/person.stl', pose=SE3(-0.4, 2.9, 0), color=(0.7, 0.5, 0.5, 1), scale=[0.08, 0.08, 0.08])
         self.env.add(person)
+
+        truck = geometry.Mesh('.venv/At2/Truck.stl', pose=SE3(-3, 1.4, 0) * SE3.Rz(pi), color=(0.4, 0.4, 0.4, 1), scale=[0.04, 0.02, 0.04])
+        self.env.add(truck)
+
+        conveyor = geometry.Mesh('.venv/At2/conveyor.stl', pose=SE3(-0.8, 1.3, 0), color=(0.3, 0.3, 0.3, 1), scale=[0.008, 0.0025, 0.005])
+        self.env.add(conveyor)
         
         self.boxes = []
         self.boxes_pos = []
@@ -79,6 +93,14 @@ class PickPlaceRobot:
         self.generate_placement_poses()
         self.start_emergency_stop_monitor()
         self.setup_collision_detection()  # Initialize collision detection
+
+        #emergency stop initialise
+        self.paused = False
+        self.ready_to_resume = False
+        self.stop_monitoring = False
+        self.monitor_thread = None
+
+        self.start_emergency_stop_monitor()
     
     def setup_collision_detection(self):#setup collision detection obstacles
         self.collision_detector = CollisionDetector(self.env)
@@ -87,10 +109,59 @@ class PickPlaceRobot:
         shelf_lwh = [0.4, 0.3, 0.5]  # length, width, height
         shelf_pose = SE3(-0.45, -1.6, 0.48)
 
-        floor_lwh = [3.0, 3.0, 0.01]
+        floor_lwh = [3.0, 3.0, 0.01] # add floor as obstacle
         floor_pose = SE3(0, 0, -0.005)
         self.collision_detector.add_obstacle(shelf_lwh, shelf_pose)
     
+    def setup_zones(self):
+        red_zone = geometry.Cuboid(scale=[0.7, 0.3, 0.01], pose=SE3(0, 0.4, 0.001), color=(1, 0, 0, 0.5))
+        self.env.add(red_zone)
+        blue_zone = geometry.Cuboid(scale=[0.7, 0.3, 0.01], pose=SE3(0, -0.4, 0.001), color=(0, 0, 1, 0.5))
+        self.env.add(blue_zone)
+    
+    def create_boxes(self):
+        for i in range(6):
+            initial_pose = SE3(0.4, -0.3 + i*0.12, 0.05)
+            box = geometry.Cuboid(scale=[0.1, 0.1, 0.1], pose=initial_pose, color=(i % 2, 0.0, (i+1) % 2, 1))
+            self.env.add(box)
+            self.boxes.append(box)
+            self.boxes_pos.append(initial_pose)
+
+        for i in range(3):
+            shelf_box = geometry.Cuboid(scale=[0.1, 0.1, 0.1], pose= SE3(0.15 - i*0.15, -1.6 , 0.1), color=(0, 0.0, 1, 1))
+            self.env.add(shelf_box)
+
+#================================================= EMERGENCY STOP MONITORING ============================================================
+    
+    def start_emergency_stop_monitor(self):
+        self.monitor_thread = threading.Thread(target=self._monitor_arduino, daemon=True)
+        self.monitor_thread.start()
+    
+    def _monitor_arduino(self):
+        print("\nEmergency Stop System Active")
+        
+        while not self.stop_monitoring:
+            if self.arduino and self.arduino.in_waiting > 0:
+                msg = self.arduino.readline().decode('utf-8').strip()
+                if msg == "PAUSE" and not self.paused:
+                    self.paused = True
+                    self.ready_to_resume = False
+                    print("\n PAUSED")
+                elif msg == "READY" and self.paused and self.ready_to_resume == False:
+                    self.ready_to_resume = True
+                    print("\n READY")
+                elif msg == "RESUME" and self.paused and self.ready_to_resume:
+                        self.paused = False
+                        self.ready_to_resume = False
+                        print("\n RESUMED")
+            time.sleep(0.05)
+    
+    def wait_if_paused(self):
+        while self.paused:
+            time.sleep(0.1)
+
+#================================================= PICK AND PLACE OPERATIONS =============================================================
+
     def move_robot_safe(self, robot, q_start, q_goal, box_idx=None):#move robot with collision detection
         success, q_matrix = self.collision_detector.find_collision_free_path(
             robot, q_start, q_goal, max_attempts=30
@@ -111,53 +182,6 @@ class PickPlaceRobot:
             time.sleep(speed)
             
         return success
-    
-    def start_emergency_stop_monitor(self):
-        self.monitor_thread = threading.Thread(target=self._monitor_keys, daemon=True)
-        self.monitor_thread.start()
-    
-    def _monitor_keys(self):
-        print("\nEmergency Stop System Active")
-        print("Press 'S' to PAUSE")
-        print("Press 'R' to RESUME")
-        
-        while not self.stop_monitoring:
-            if keyboard.is_pressed('s'):
-                if not self.paused:
-                    self.paused = True
-                    print("\nPAUSED")
-                    print("Press 'R' to resume")
-                time.sleep(0.3)
-            
-            elif keyboard.is_pressed('r'):
-                if self.paused:
-                    self.paused = False
-                    print("RESUMING\n")
-                time.sleep(0.3)
-            
-            time.sleep(0.05)
-    
-    def wait_if_paused(self):
-        while self.paused:
-            time.sleep(0.1)
-    
-    def setup_zones(self):
-        red_zone = geometry.Cuboid(scale=[0.7, 0.3, 0.01], pose=SE3(0, 0.4, 0.001), color=(1, 0, 0, 0.5))
-        self.env.add(red_zone)
-        blue_zone = geometry.Cuboid(scale=[0.7, 0.3, 0.01], pose=SE3(0, -0.4, 0.001), color=(0, 0, 1, 0.5))
-        self.env.add(blue_zone)
-    
-    def create_boxes(self):
-        for i in range(6):
-            initial_pose = SE3(0.4, -0.3 + i*0.12, 0.05)
-            box = geometry.Cuboid(scale=[0.1, 0.1, 0.1], pose=initial_pose, color=(i % 2, 0.0, (i+1) % 2, 1))
-            self.env.add(box)
-            self.boxes.append(box)
-            self.boxes_pos.append(initial_pose)
-
-        for i in range(3):
-            shelf_box = geometry.Cuboid(scale=[0.1, 0.1, 0.1], pose= SE3(0.15 - i*0.15, -1.6 , 0.1), color=(0, 0.0, 1, 1))
-            self.env.add(shelf_box)
     
     def generate_placement_poses(self):
         for i in range(6):
@@ -202,7 +226,7 @@ class PickPlaceRobot:
                 place_pose = SE3(0.15 - i*0.075, -1.6 , 0.5)
                 poses.append(place_pose)
             else:
-                place_pose = SE3(-0.05 + i*0.05, 1.3 , 0.01)
+                place_pose = SE3(0.2 + -i*0.07, 1.3 , 0.4)
                 poses.append(place_pose)
         return poses
     
@@ -251,8 +275,13 @@ class PickPlaceRobot:
         self.stop_monitoring = True
         if self.monitor_thread:
             self.monitor_thread.join(timeout=1.0)
+        if self.arduino:
+            self.arduino.close()
+
+# ====================================================== TEACH PENDANT FUNCTION ==========================================================
     
     def create_teach_pendant(self, robot, robot_name):
+        plt.ioff()
         fig = plt.figure(figsize=(5, 4))
         updating = {'flag': False}
         
@@ -361,7 +390,7 @@ class PickPlaceRobot:
     def teach_cobot(self):
         self.create_teach_pendant(self.r3, 'myCobot')
 
-# ==================== COLLISION DETECTION CLASS ====================
+# ===================================================== COLLISION DETECTION CLASS =============================================================
 class CollisionDetector:
     def __init__(self, env):
         self.env = env
@@ -524,9 +553,6 @@ robot = PickPlaceRobot()
 print("  1 - Open Aubo teach pendant")
 print("  2 - Open myCobot teach pendant")
 print("  SPACE - Start operation")
-print("\nDuring operation:")
-print("  S - PAUSE (Emergency Stop)")
-print("  R - RESUME")
 
 # Menu system
 teach_mode = True
