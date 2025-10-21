@@ -16,12 +16,15 @@ from itertools import combinations
 from spatialgeometry import Sphere
 from spatialmath.base import transl
 import serial # For Arduino communication
+from scipy import linalg
+from roboticstoolbox import trapezoidal # used to generate trapezoidal velocity profile used for rmrc
 
 #================================================ SETUP PICK AND PLACE ROBOT ENVIRONMENT ==================================================
 class PickPlaceRobot:
     def __init__(self):
         self.env = swift.Swift()
         self.env.launch()
+        plt.ioff() # thsi stops the weird 3d axis thing from showing up when teach is called
 
         try: #check if arduino is connected or not
             self.arduino = serial.Serial('COM10', 9600, timeout=1)  # COM port depends on which port the arduino is plugged into
@@ -106,12 +109,29 @@ class PickPlaceRobot:
         self.collision_detector = CollisionDetector(self.env)
         
         # Add shelf as obstacle (main collision concern)
-        shelf_lwh = [0.4, 0.3, 0.5]  # length, width, height
-        shelf_pose = SE3(-0.45, -1.6, 0.48)
+        shelf_lwh = [0.7, 0.4, 0.7]  # length, width, height
+        shelf_pose = SE3(0, -1.6, 0.2)
 
         floor_lwh = [3.0, 3.0, 0.01] # add floor as obstacle
         floor_pose = SE3(0, 0, -0.005)
-        self.collision_detector.add_obstacle(shelf_lwh, shelf_pose)
+
+        conveyor_lwh = [2, 0.35, 0.4]  # length, width, height
+        conveyor_pose = SE3(-0.8, 1.3, 0.2)
+
+        self.collision_detector.add_obstacle(shelf_lwh, shelf_pose) #add shelf as obstacle
+
+        self.collision_detector.add_obstacle(floor_lwh, floor_pose) #add floor as obstacle
+
+        self.collision_detector.add_obstacle(conveyor_lwh, conveyor_pose) #add conveyor as obstacle
+
+        # shelf_obs = geometry.Cuboid(scale=shelf_lwh, pose=shelf_pose, color=(0.5, 0.2, 0.2, 0.3)) #visualise shelf obstacle
+        # self.env.add(shelf_obs)
+
+        # floor_obs = geometry.Cuboid(scale=floor_lwh, pose=floor_pose, color=(0.5, 0.2, 0.2, 0.3)) #visualise floor obstacle
+        # self.env.add(floor_obs)
+
+        # conveyor_obs = geometry.Cuboid(scale=conveyor_lwh, pose=conveyor_pose, color=(0.5, 0.2, 0.2, 0.3)) #visualise conveyor obstacle
+        # self.env.add(conveyor_obs)
     
     def setup_zones(self):
         red_zone = geometry.Cuboid(scale=[0.7, 0.3, 0.01], pose=SE3(0, 0.4, 0.001), color=(1, 0, 0, 0.5))
@@ -151,9 +171,9 @@ class PickPlaceRobot:
                     self.ready_to_resume = True
                     print("\n READY")
                 elif msg == "RESUME" and self.paused and self.ready_to_resume:
-                        self.paused = False
-                        self.ready_to_resume = False
-                        print("\n RESUMED")
+                    self.paused = False
+                    self.ready_to_resume = False
+                    print("\n RESUMED")
             time.sleep(0.05)
     
     def wait_if_paused(self):
@@ -235,6 +255,8 @@ class PickPlaceRobot:
         steps = 50
         q0_L = (0, -pi/2, pi/2, 0, pi/2, 0)
         q0_R = (0, -pi/2, -pi/2, 0, pi/2, 0)
+        rmrc_steps = 50
+        delta_t = 0.03
         second_place_pose = self.second_placement_poses()
 
         for i, pose in enumerate(self.placement_poses):
@@ -253,7 +275,18 @@ class PickPlaceRobot:
                 
                 self.move_robot_safe(self.r2, q_pickup, q_air, box_idx=i)
                 
-                self.move_robot_safe(self.r2, q_air, q_place, box_idx=i)
+                q_traj, success = self.rmrc_motion(self.r2, air_pose, place_pose, steps=rmrc_steps, delta_t=delta_t)
+
+                for step_idx in range(rmrc_steps):
+                    self.wait_if_paused()
+                    self.r2.q = q_traj[step_idx]
+                    
+                    # Keep box attached to end effector
+                    ee_pose = self.r2.fkine(self.r2.q)
+                    self.boxes[i].T = ee_pose * SE3(0.0, 0.0, 0.07)
+                    
+                    self.env.step(0.01)
+                    time.sleep(speed * 0.5)
 
             else:  # myCobot movement
                 
@@ -281,7 +314,6 @@ class PickPlaceRobot:
 # ====================================================== TEACH PENDANT FUNCTION ==========================================================
     
     def create_teach_pendant(self, robot, robot_name):
-        plt.ioff()
         fig = plt.figure(figsize=(5, 4))
         updating = {'flag': False}
         
@@ -389,6 +421,88 @@ class PickPlaceRobot:
 
     def teach_cobot(self):
         self.create_teach_pendant(self.r3, 'myCobot')
+# ================================================== RMRC FUNCTION ============================================================
+    def rmrc_motion(self, robot, T_start, T_end, steps=50, delta_t=0.05):
+        """
+        Perform RMRC motion from T_start to T_end using Lab 6 velocity control method
+        This implements the same approach as Lab 6 Question 3:
+        1. Create Cartesian trajectory using trapezoidal velocity profile
+        2. Solve IK for initial position
+        3. Loop through trajectory calculating velocities
+        4. Use Jacobian inverse to get joint velocities
+        5. Integrate to get joint positions
+        
+        Args:
+            robot: Robot object
+            T_start: Starting SE3 transform
+            T_end: Ending SE3 transform
+            steps: Number of discrete time steps
+            delta_t: Time step duration
+            
+        Returns:
+            q_matrix: Joint angle trajectory (steps x n_joints)
+            success: Boolean
+        """
+        # Step 1: Extract start and end positions (like Lab 6 x1 and x2)
+        x_start = T_start.t  # Translation vector [x, y, z]
+        x_end = T_end.t
+        R_constant = T_end.R  # Keep rotation constant for simplicity
+        
+        # Step 2: Create trajectory using trapezoidal velocity profile (Lab 6 line 241)
+        s = trapezoidal(0, 1, steps).q
+        
+        # Step 3: Generate Cartesian waypoints (Lab 6 lines 244-246)
+        x_trajectory = np.zeros([3, steps])
+        for i in range(steps):
+            x_trajectory[:, i] = x_start * (1 - s[i]) + s[i] * x_end
+        
+        # Step 4: Initialize joint trajectory matrix (Lab 6 line 248)
+        q_matrix = np.zeros([steps, robot.n])
+        
+        # Step 5: Solve IK for initial position (Lab 6 line 250)
+        q0 = robot.q if robot.q is not None else [0, -pi/2, pi/2, 0, pi/2, 0]
+        result = robot.ikine_LM(T_start, q0=q0, joint_limits=True)
+        
+        if not result.success:
+            print(f"  Warning: Initial IK failed for RMRC")
+            return None, False
+        
+        q_matrix[0, :] = result.q
+        
+        # Step 6: RMRC Loop (Lab 6 lines 252-258)
+        for i in range(steps - 1):
+            # Calculate Cartesian velocity (Lab 6 line 253)
+            xdot = (x_trajectory[:, i+1] - x_trajectory[:, i]) / delta_t
+            
+            # Get Jacobian at current state (Lab 6 line 254)
+            J = robot.jacob0(q_matrix[i, :])
+            
+            # Use only position rows (x, y, z) - Lab 6 line 255
+            J_pos = J[:3, :]
+            
+            manipulability = np.sqrt(np.abs(linalg.det(J_pos @ J_pos.T)))
+            
+            if manipulability < 0.01:
+                lambda_sq = 0.01
+                q_dot = J_pos.T @ linalg.inv(J_pos @ J_pos.T + lambda_sq * np.eye(3)) @ xdot
+            else:
+                # Solve for joint velocities: q_dot = J^-1 * xdot (Lab 6 line 256)
+                q_dot = linalg.pinv(J_pos) @ xdot
+            
+            if not np.all(np.isfinite(q_dot)):
+                return None, False
+            
+            # Update joint angles using Euler integration (Lab 6 line 257)
+            q_matrix[i+1, :] = q_matrix[i, :] + delta_t * q_dot
+            
+            # Refine with IK for better accuracy
+            T_desired = SE3.Rt(R_constant, x_trajectory[:, i+1])
+            result = robot.ikine_LM(T_desired, q0=q_matrix[i+1, :], joint_limits=True)
+            
+            if result.success:
+                q_matrix[i+1, :] = result.q
+        
+        return q_matrix, True
 
 # ===================================================== COLLISION DETECTION CLASS =============================================================
 class CollisionDetector:
