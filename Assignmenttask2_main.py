@@ -19,20 +19,165 @@ import serial # For Arduino communication
 from scipy import linalg
 from roboticstoolbox import trapezoidal # used to generate trapezoidal velocity profile used for rmrc
 
+ARDUINO_ON = True
+
+# ==================== MATPLOTLIB CONTROL PANEL CLASS ====================
+class MatplotlibControlPanel:
+    """Matplotlib-based control panel - no Tkinter needed"""
+    
+    def __init__(self, robot):
+        self.robot = robot
+        self.fig = None
+        self.status_text = None
+        
+    def create_control_panel(self):
+        """Create matplotlib-based control panel"""
+        self.fig = plt.figure(figsize=(6, 5))
+        self.fig.canvas.manager.set_window_title('Robot Control Panel')
+        
+        # Remove axes
+        ax = self.fig.add_subplot(111)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        
+        # Status text
+        self.status_text = ax.text(
+            0.5, 0.85, 'System Status: RUNNING',
+            ha='center', va='center',
+            fontsize=18, fontweight='bold',
+            color='green',
+            bbox=dict(boxstyle='round', facecolor='#2b2b2b', edgecolor='green', linewidth=2)
+        )
+        
+        # E-Stop Button (Large and Red)
+        ax_estop = self.fig.add_axes([0.2, 0.55, 0.6, 0.15])
+        self.estop_btn = Button(
+            ax_estop, 'EMERGENCY STOP',
+            color='#ff0000',
+            hovercolor='#cc0000'
+        )
+        self.estop_btn.label.set_fontsize(16)
+        self.estop_btn.label.set_fontweight('bold')
+        self.estop_btn.on_clicked(lambda event: self.trigger_estop())
+        
+        # Reset Button
+        ax_reset = self.fig.add_axes([0.2, 0.35, 0.6, 0.1])
+        self.reset_btn = Button(
+            ax_reset, 'RESET',
+            color='#ffa500',
+            hovercolor='#cc8400'
+        )
+        self.reset_btn.label.set_fontsize(14)
+        self.reset_btn.label.set_fontweight('bold')
+        self.reset_btn.on_clicked(lambda event: self.reset_system())
+        self.reset_btn.ax.set_visible(False)  # Initially disabled
+        
+        # Resume Button
+        ax_resume = self.fig.add_axes([0.2, 0.2, 0.6, 0.1])
+        self.resume_btn = Button(
+            ax_resume, 'RESUME',
+            color='#00aa00',
+            hovercolor='#008800'
+        )
+        self.resume_btn.label.set_fontsize(14)
+        self.resume_btn.label.set_fontweight('bold')
+        self.resume_btn.on_clicked(lambda event: self.resume_system())
+        self.resume_btn.ax.set_visible(False)  # Initially disabled
+        
+        # Info text
+        ax.text(
+            0.5, 0.08,
+            'Press E-Stop to halt all robot motion\nThen Reset → Resume to continue',
+            ha='center', va='center',
+            fontsize=9,
+            color='#aaaaaa'
+        )
+        
+        plt.tight_layout()
+        
+        # Start update loop
+        self.timer = self.fig.canvas.new_timer(interval=100)
+        self.timer.add_callback(self.update_gui)
+        self.timer.start()
+        
+        # Show the figure (non-blocking initially)
+        plt.show(block=False)
+        plt.pause(0.01)
+        
+    def trigger_estop(self):
+        """Trigger emergency stop"""
+        if not self.robot.estop_active:
+            self.robot.estop_active = True
+            self.robot.resume_allowed = False
+            self.robot.estop_event.clear()
+            print("EMERGENCY STOP triggered!")
+            
+            self.status_text.set_text('Status: E-STOP ACTIVE')
+            self.status_text.set_color('red')
+            self.status_text.get_bbox_patch().set_edgecolor('red')
+            
+            self.estop_btn.ax.set_visible(False)
+            self.reset_btn.ax.set_visible(True)
+            self.resume_btn.ax.set_visible(False)
+            
+            self.fig.canvas.draw_idle()
+    
+    def reset_system(self):
+        """Reset the system after E-Stop"""
+        if self.robot.estop_active:
+            self.robot.resume_allowed = True
+            print("System reset — ready to resume.")
+            
+            self.status_text.set_text('Status: READY TO RESUME')
+            self.status_text.set_color('orange')
+            self.status_text.get_bbox_patch().set_edgecolor('orange')
+            
+            self.reset_btn.ax.set_visible(False)
+            self.resume_btn.ax.set_visible(True)
+            
+            self.fig.canvas.draw_idle()
+    
+    def resume_system(self):
+        """Resume operation after reset"""
+        if self.robot.estop_active and self.robot.resume_allowed:
+            self.robot.estop_active = False
+            self.robot.resume_allowed = False
+            self.robot.estop_event.set()
+            print("System resumed.")
+            
+            self.status_text.set_text('System Status: RUNNING')
+            self.status_text.set_color('green')
+            self.status_text.get_bbox_patch().set_edgecolor('green')
+            
+            self.estop_btn.ax.set_visible(True)
+            self.reset_btn.ax.set_visible(False)
+            self.resume_btn.ax.set_visible(False)
+            
+            self.fig.canvas.draw_idle()
+    
+    def update_gui(self):
+        """Periodic update callback"""
+        pass
+    
+    def show(self):
+        """Show the control panel (blocking)"""
+        plt.ioff()  # Turn off interactive mode to make show() blocking
+        plt.show(block=True)  # Force blocking
 #================================================ SETUP PICK AND PLACE ROBOT ENVIRONMENT ==================================================
 class PickPlaceRobot:
     def __init__(self):
         self.env = swift.Swift()
         self.env.launch()
-        plt.ioff() # thsi stops the weird 3d axis thing from showing up when teach is called
 
-        try: #check if arduino is connected or not
-            self.arduino = serial.Serial('COM10', 9600, timeout=1)  # COM port depends on which port the arduino is plugged into
-            time.sleep(2)  # Allow time for Arduino reset
-            print("Connected to Arduino")
-        except Exception as e:
-            self.arduino = None
-            print("Could not connect to Arduino: {e}") # CLOSE ARDUINO IDE BEFORE STARTOING PROGRAM
+        if ARDUINO_ON:
+            try: #check if arduino is connected or not
+                self.arduino = serial.Serial('COM10', 9600, timeout=1)  # COM port depends on which port the arduino is plugged into
+                time.sleep(2)  # Allow time for Arduino reset
+                print("Connected to Arduino")
+            except Exception as e:
+                self.arduino = None
+                print("Could not connect to Arduino: {e}") # CLOSE ARDUINO IDE BEFORE STARTOING PROGRAM
         
         self.r1 = UR3()
         self.r1.base = self.r1.base * SE3(0,0,0)
@@ -46,26 +191,27 @@ class PickPlaceRobot:
         self.r3.base = self.r2.base * SE3(0,1.9,0)
         self.r3.add_to_env(self.env)
 
-        shelf = geometry.Mesh('.venv/At2/shelf.stl', pose=SE3(-0.45, -1.6, 0.48) * SE3.Rx(pi), color=(0.5, 0.3, 0.1, 1), scale=[0.007, 0.002, 0.008])
-        self.env.add(shelf)
+        if ARDUINO_ON:
+            shelf = geometry.Mesh('.venv/At2/shelf.stl', pose=SE3(-0.45, -1.6, 0.48) * SE3.Rx(pi), color=(0.5, 0.3, 0.1, 1), scale=[0.007, 0.002, 0.008])
+            self.env.add(shelf)
 
-        fence_data = [(SE3(-0.7, 1.9, 0), [0.02, 0.03, 0.03]),(SE3(-0.3, -1.5, 0), [0.03, 0.03, 0.03]),(SE3(0.9, -0.1, 0) * SE3.Rz(pi / 2), [0.035, 0.03, 0.03]),(SE3(-2.1, -0.5, 0) * SE3.Rz(pi / 2), [0.025, 0.03, 0.03])]
+            fence_data = [(SE3(-0.7, 1.9, 0), [0.02, 0.03, 0.03]),(SE3(-0.3, -1.5, 0), [0.03, 0.03, 0.03]),(SE3(0.9, -0.1, 0) * SE3.Rz(pi / 2), [0.035, 0.03, 0.03]),(SE3(-2.1, -0.5, 0) * SE3.Rz(pi / 2), [0.025, 0.03, 0.03])]
 
-        for pose, scale in fence_data:
-            fence = geometry.Mesh('.venv/At2/fence.stl', pose=pose, color=(0.5, 0.5, 0.5, 1), scale=scale)
-            self.env.add(fence)
+            for pose, scale in fence_data:
+                fence = geometry.Mesh('.venv/At2/fence.stl', pose=pose, color=(0.5, 0.5, 0.5, 1), scale=scale)
+                self.env.add(fence)
 
-        table = geometry.Mesh('.venv/At2/Table.stl', pose=SE3(-1, 2, 0.5) * SE3.Rx(pi), color=(0.5, 0.3, 0.1, 1), scale=[0.015, 0.02, 0.02])
-        self.env.add(table)
+            table = geometry.Mesh('.venv/At2/Table.stl', pose=SE3(-1, 2, 0.5) * SE3.Rx(pi), color=(0.5, 0.3, 0.1, 1), scale=[0.015, 0.02, 0.02])
+            self.env.add(table)
 
-        fire_extinguisher = geometry.Mesh('.venv/At2/Fire_extinguisher.stl', pose=SE3(-5, -5, 0), color=(0.5, 0, 0, 1), scale=[0.06, 0.06, 0.06])
-        self.env.add(fire_extinguisher)
+            fire_extinguisher = geometry.Mesh('.venv/At2/Fire_extinguisher.stl', pose=SE3(-5, -5, 0), color=(0.5, 0, 0, 1), scale=[0.06, 0.06, 0.06])
+            self.env.add(fire_extinguisher)
 
-        sign_post = geometry.Cylinder(radius=0.02,length=1.2, pose=SE3(0.35, 1.68, 0.6), color=(0.2, 0.2, 0.2, 1))
-        self.env.add(sign_post)
+            sign_post = geometry.Cylinder(radius=0.02,length=1.2, pose=SE3(0.35, 1.68, 0.6), color=(0.2, 0.2, 0.2, 1))
+            self.env.add(sign_post)
 
-        warning_sign = geometry.Mesh('.venv/At2/Warning_sign.stl', pose=SE3(0.6, 1.7, 1) * SE3.Rx(pi / 2) * SE3.Ry(pi), color=(0.5, 0.5, 0, 1), scale=[0.003, 0.003, 0.003])
-        self.env.add(warning_sign)
+            warning_sign = geometry.Mesh('.venv/At2/Warning_sign.stl', pose=SE3(0.6, 1.7, 1) * SE3.Rx(pi / 2) * SE3.Ry(pi), color=(0.5, 0.5, 0, 1), scale=[0.003, 0.003, 0.003])
+            self.env.add(warning_sign)
 
         button = geometry.Cylinder(radius=0.05, length=0.04, pose=SE3(-0.5, 2.4, 0.52), color=(1.0, 0, 0, 1))
         self.env.add(button)
@@ -73,14 +219,15 @@ class PickPlaceRobot:
         button_casing = geometry.Cuboid(scale=[0.12, 0.12, 0.04], pose=SE3(-0.5, 2.4, 0.51), color=(0.1, 0.1, 0.1, 1))
         self.env.add(button_casing)
 
-        person = geometry.Mesh('.venv/At2/person.stl', pose=SE3(-0.4, 2.9, 0), color=(0.7, 0.5, 0.5, 1), scale=[0.08, 0.08, 0.08])
-        self.env.add(person)
+        if ARDUINO_ON:
+            person = geometry.Mesh('.venv/At2/person.stl', pose=SE3(-0.4, 2.9, 0), color=(0.7, 0.5, 0.5, 1), scale=[0.08, 0.08, 0.08])
+            self.env.add(person)
 
-        truck = geometry.Mesh('.venv/At2/Truck.stl', pose=SE3(-3, 1.4, 0) * SE3.Rz(pi), color=(0.4, 0.4, 0.4, 1), scale=[0.04, 0.02, 0.04])
-        self.env.add(truck)
+            truck = geometry.Mesh('.venv/At2/Truck.stl', pose=SE3(-3, 1.4, 0) * SE3.Rz(pi), color=(0.4, 0.4, 0.4, 1), scale=[0.04, 0.02, 0.04])
+            self.env.add(truck)
 
-        conveyor = geometry.Mesh('.venv/At2/conveyor.stl', pose=SE3(-0.8, 1.3, 0), color=(0.3, 0.3, 0.3, 1), scale=[0.008, 0.0025, 0.005])
-        self.env.add(conveyor)
+            conveyor = geometry.Mesh('.venv/At2/conveyor.stl', pose=SE3(-0.8, 1.3, 0), color=(0.3, 0.3, 0.3, 1), scale=[0.008, 0.0025, 0.005])
+            self.env.add(conveyor)
         
         self.boxes = []
         self.boxes_pos = []
@@ -90,11 +237,16 @@ class PickPlaceRobot:
         self.paused = False
         self.stop_monitoring = False
         self.monitor_thread = None
+        # GUI Estop flags
+        self.estop_active = False
+        self.resume_allowed = False
+        self.estop_event = threading.Event()
+        self.estop_event.set()  # Initially set (not stopped)
         
         self.setup_zones()
         self.create_boxes()
         self.generate_placement_poses()
-        self.start_emergency_stop_monitor()
+#EV        self.start_emergency_stop_monitor()
         self.setup_collision_detection()  # Initialize collision detection
 
         #emergency stop initialise
@@ -103,17 +255,18 @@ class PickPlaceRobot:
         self.stop_monitoring = False
         self.monitor_thread = None
 
-        self.start_emergency_stop_monitor()
+        if ARDUINO_ON:
+            self.start_emergency_stop_monitor()
     
     def setup_collision_detection(self):#setup collision detection obstacles
         self.collision_detector = CollisionDetector(self.env)
         
         # Add shelf as obstacle (main collision concern)
-        shelf_lwh = [0.7, 0.4, 0.7]  # length, width, height
+        shelf_lwh = [0.7, 0.4, 0.6]  # length, width, height
         shelf_pose = SE3(0, -1.6, 0.2)
 
         floor_lwh = [3.0, 3.0, 0.01] # add floor as obstacle
-        floor_pose = SE3(0, 0, -0.005)
+        floor_pose = SE3(0, 0, -0.05)
 
         conveyor_lwh = [2, 0.35, 0.4]  # length, width, height
         conveyor_pose = SE3(-0.8, 1.3, 0.2)
@@ -132,6 +285,28 @@ class PickPlaceRobot:
 
         # conveyor_obs = geometry.Cuboid(scale=conveyor_lwh, pose=conveyor_pose, color=(0.5, 0.2, 0.2, 0.3)) #visualise conveyor obstacle
         # self.env.add(conveyor_obs)
+
+    def move_robot_safe(self, robot, q_start, q_goal, box_idx=None):
+        """Move robot with collision detection"""
+        success, q_matrix = self.collision_detector.find_collision_free_path(
+            robot, q_start, q_goal, max_attempts=30
+        )
+        
+        if not success:
+            print("collision detected")
+        
+        for q in q_matrix:
+            self.check_estop()  # Check E-Stop at each step
+            robot.q = q
+            
+            if box_idx is not None and box_idx < len(self.boxes):
+                ee_pose = robot.fkine(robot.q)
+                self.boxes[box_idx].T = ee_pose * SE3(0.0, 0.0, 0.07)
+            
+            self.env.step(0.02)
+            time.sleep(speed)
+            
+        return success
     
     def setup_zones(self):
         red_zone = geometry.Cuboid(scale=[0.7, 0.3, 0.01], pose=SE3(0, 0.4, 0.001), color=(1, 0, 0, 0.5))
@@ -212,6 +387,24 @@ class PickPlaceRobot:
             
             self.placement_poses.append(place_pose)
     
+    # ----------------------------------------------------------
+    # --- E-STOP CONTROL METHODS
+    # ----------------------------------------------------------
+    def check_estop(self):
+        """Pause motion safely if E-Stop is active - NO BUSY LOOP."""
+        if not self.estop_event.is_set():
+            print("Motion paused due to E-Stop. Awaiting reset and resume...")
+            self.estop_event.wait()  # Blocks efficiently until event is set
+            print("Motion resuming...")
+    
+    def create_control_panel(self):
+        """Create matplotlib-based control panel (macOS compatible)"""
+        self.control_panel = MatplotlibControlPanel(self)
+        self.control_panel.create_control_panel()
+    
+    # ----------------------------------------------------------
+    # --- ROBOT MOTION METHODS
+    # ----------------------------------------------------------
     def UR3_pick_place(self):
         steps = 50
         q0 = (0, -pi/2, -pi/2, -pi/2, pi/2, 0)
@@ -219,7 +412,8 @@ class PickPlaceRobot:
 
         for i, pose in enumerate(self.boxes_pos):
             self.wait_if_paused()
-            
+            self.check_estop()
+			
             pickup_pose = pose * SE3(0.0, 0.0, 0.07) * SE3.Rx(pi)
             air_pose = pose * SE3(-0.1, 0.0, 0.2) * SE3.Rx(pi)
             place_pose = self.placement_poses[i] * SE3(0.0, 0.0, 0.07) * SE3.Rx(pi)
@@ -261,7 +455,8 @@ class PickPlaceRobot:
 
         for i, pose in enumerate(self.placement_poses):
             self.wait_if_paused()
-            
+            self.check_estop()
+			
             if i % 2 == 0: #aubo movement
                 pickup_pose = self.placement_poses[i] * SE3(0.0, 0.0, 0.07) * SE3.Rx(pi)
                 air_pose = second_place_pose[i] * SE3(0, 0.1, 0.09) * SE3.Rx(pi)
@@ -279,6 +474,7 @@ class PickPlaceRobot:
 
                 for step_idx in range(rmrc_steps):
                     self.wait_if_paused()
+                    self.check_estop()
                     self.r2.q = q_traj[step_idx]
                     
                     # Keep box attached to end effector
@@ -291,7 +487,7 @@ class PickPlaceRobot:
             else:  # myCobot movement
                 
                 pickup_pose = self.placement_poses[i] * SE3(0.0, 0.0, 0.1)* SE3.Rx(pi)
-                air_pose = second_place_pose[i] * SE3(0, -0.1, 0.2) * SE3.Rx(pi)
+                air_pose = second_place_pose[i] * SE3(0, -0.1, 0.15) * SE3.Rx(pi)
                 place_pose = second_place_pose[i] * SE3(0.0, 0.0, 0.1) * SE3.Rx(pi)
 
                 q_pickup = self.r3.ikine_LM(pickup_pose, q0=q0_L, joint_limits=True, mask=[1,1,1,1,1,1]).q
@@ -299,22 +495,59 @@ class PickPlaceRobot:
                 q_place = self.r3.ikine_LM(place_pose, q0=q0_R, joint_limits=True, mask=[1,1,1,1,1,1]).q
 
                 self.move_robot_safe(self.r3, self.r3.q, q_pickup)
-                
                 self.move_robot_safe(self.r3, q_pickup, q_air, box_idx=i)
-                
                 self.move_robot_safe(self.r3, q_air, q_place, box_idx=i)
+                
+                q_traj, success = self.rmrc_motion(self.r3, air_pose, place_pose, steps=rmrc_steps, delta_t=delta_t)
+
+                if q_traj is not None and success:
+                    print(f"RMRC Successful for myCobot (box {i})")
+                    for step_idx in range(rmrc_steps):
+                        self.wait_if_paused()
+                        self.check_estop()
+
+                        self.r3.q = q_traj[step_idx]
+                        
+                        # Keep box attached to end effector
+                        ee_pose = self.r3.fkine(self.r3.q)
+                        self.boxes[i].T = ee_pose * SE3(0.0, 0.0, 0.07)
+                        
+                        self.env.step(0.01)
+                        time.sleep(speed * 0.5)
+                else:
+                    print(f"⚠ Warning: RMRC motion failed for myCobot (box {i}), using fallback trajectory")
+                    # Fallback: Use simple joint interpolation
+                    q_fallback = rtb.jtraj(self.r3.q, q_place, rmrc_steps).q
+                    for step_idx in range(rmrc_steps):
+                        self.wait_if_paused()
+                        self.check_estop()
+                        self.r3.q = q_fallback[step_idx]
+                        
+                        # Keep box attached to end effector
+                        ee_pose = self.r3.fkine(self.r3.q)
+                        self.boxes[i].T = ee_pose * SE3(0.0, 0.0, 0.07)
+                        
+                        self.env.step(0.01)
+                        time.sleep(speed * 0.5)
     
     def shutdown(self):
-        self.stop_monitoring = True
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=1.0)
-        if self.arduino:
-            self.arduino.close()
+        if ARDUINO_ON:
+            self.stop_monitoring = True
+            if self.monitor_thread:
+                self.monitor_thread.join(timeout=1.0)
+            if self.arduino:
+                self.arduino.close()
 
 # ====================================================== TEACH PENDANT FUNCTION ==========================================================
     
     def create_teach_pendant(self, robot, robot_name):
+        """Create an interactive teach pendant with working reset and close buttons"""
+        # plt.ion()  # Enable interactive mode
         fig = plt.figure(figsize=(5, 4))
+        fig.canvas.manager.set_window_title(f'{robot_name} Teach Pendant')
+        
+        # Store initial joint configuration for reset
+        initial_q = list(robot.q)
         updating = {'flag': False}
         
         # Joint Control 
@@ -326,7 +559,7 @@ class PickPlaceRobot:
         joint_sliders = []
         
         for i in range(6):
-            ax_slider = plt.axes([0.1, 0.75 - i*0.1, 0.35, 0.03])
+            ax_slider = fig.add_axes([0.1, 0.75 - i*0.1, 0.35, 0.03])
             slider = Slider(ax_slider, f'J{i+1}', -2*pi, 2*pi, valinit=joint_angles[i], valstep=0.01)
             joint_sliders.append(slider)
         
@@ -344,6 +577,8 @@ class PickPlaceRobot:
             for i, slider in enumerate(cart_sliders):
                 slider.set_val(current_pose.t[i])
             
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
             updating['flag'] = False
         
         for slider in joint_sliders:
@@ -359,7 +594,7 @@ class PickPlaceRobot:
         cart_sliders = []
         
         for i, label in enumerate(['X (m)', 'Y (m)', 'Z (m)']):
-            ax_slider = plt.axes([0.6, 0.75 - i*0.1, 0.35, 0.03])
+            ax_slider = fig.add_axes([0.6, 0.75 - i*0.1, 0.35, 0.03])
             slider = Slider(ax_slider, label, -1.5, 1.5, valinit=cart_pos[i], valstep=0.01)
             cart_sliders.append(slider)
         
@@ -384,43 +619,69 @@ class PickPlaceRobot:
                     slider.set_val(actual_pose.t[i])
                 print(f"no sol found")
             
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
             updating['flag'] = False
         
         for slider in cart_sliders:
             slider.on_changed(update_cartesian)
         
-        # Buttons
-        reset_ax = plt.axes([0.35, 0.05, 0.1, 0.04])
+        # FIXED: Reset Button - properly resets to initial position
+        reset_ax = fig.add_axes([0.35, 0.05, 0.1, 0.04])
         reset_btn = Button(reset_ax, 'Reset')
         
         def reset_all(event):
             updating['flag'] = True
             
-            for i, slider in enumerate(joint_sliders):
-                slider.reset()
-            
-            robot.q = [slider.val for slider in joint_sliders]
+            robot.q = initial_q
             self.env.step(0.01)
             
+            # Update joint sliders to match initial configuration
+            for i, slider in enumerate(joint_sliders):
+                slider.set_val(initial_q[i])
+
             current_pose = robot.fkine(robot.q)
+
             for i, slider in enumerate(cart_sliders):
                 slider.set_val(current_pose.t[i])
             
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
             updating['flag'] = False
-        
+            print(f"{robot_name} reset to initial configuration")       
+
         reset_btn.on_clicked(reset_all)
         
-        close_ax = plt.axes([0.55, 0.05, 0.1, 0.04])
-        close_btn = Button(close_ax, 'Close')
-        close_btn.on_clicked(lambda event: plt.close(fig))
+        # FIXED: Close Button - properly closes the figure
+        close_ax = fig.add_axes([0.55, 0.05, 0.1, 0.04])
+        close_btn = Button(close_ax, 'Close',)
         
-        plt.show()
+        def close_window(event):
+            """Close the teach pendant window"""
+            print(f"Closing {robot_name} teach pendant...")
+            plt.close(fig)
+        
+        close_btn.on_clicked(close_window)
+        
+        plt.ion()
+        plt.show(block=False)
+        plt.pause(0.1)
+        
+        print(f"\n{robot_name} Teach Pendant active - Close window when done\n")
+
+        while plt.fignum_exists(fig.number):
+            plt.pause(0.1)  # Process events
+            self.env.step(0.01)  # Keep Swift rendering
+        
+        print(f"{robot_name} Teach Pendant closed")
+
 
     def teach_aubo(self):
         self.create_teach_pendant(self.r2, 'Aubo I5')
 
     def teach_cobot(self):
         self.create_teach_pendant(self.r3, 'myCobot')
+
 # ================================================== RMRC FUNCTION ============================================================
     def rmrc_motion(self, robot, T_start, T_end, steps=50, delta_t=0.05):
         """
@@ -588,7 +849,7 @@ class CollisionDetector:
         if not collision:
             return True, q_direct
         
-        print("Collision detected")
+        print("Collision detected, finding alternate path...")
         
         # Use RRT approach to find path
         q_waypoints = [q_start, q_goal]
@@ -643,7 +904,7 @@ class CollisionDetector:
                         )
                     break
         
-        print(f"no collision free path found")
+        print(f"No collision free path found after {max_attempts} attempts")
         return False, q_direct
     
     def interpolate_path(self, q1, q2, max_step=np.deg2rad(1)):
@@ -662,40 +923,87 @@ class CollisionDetector:
         return q_rand
     
 # ==================== MAIN EXECUTION ====================
-speed = 0.005
-robot = PickPlaceRobot()
-print("  1 - Open Aubo teach pendant")
-print("  2 - Open myCobot teach pendant")
-print("  SPACE - Start operation")
+if __name__ == "__main__":
+    speed = 0.005
+    robot = PickPlaceRobot()
+    print("  1 - Open Aubo teach pendant")
+    print("  2 - Open myCobot teach pendant")
+    print("  SPACE - Start operation")
 
 # Menu system
-teach_mode = True
-while teach_mode:
-    if keyboard.is_pressed('1'):
-        print("\n Aubo teach opening")
-        robot.teach_aubo()
-        print("Aubo teach closed.\n")
-        time.sleep(0.5)
-    
-    elif keyboard.is_pressed('2'):
-        print("\nCobot teach opening")
-        robot.teach_cobot()
-        print("myCobot teach closed.\n")
-        time.sleep(0.5)
-    
-    elif keyboard.is_pressed('space'):
-        print("\nstarting pick and place\n")
-        time.sleep(0.3)
-        teach_mode = False
-    
-    time.sleep(0.05)
+    teach_mode = True
+    state = 0
 
-try:
-    robot.UR3_pick_place()
-    robot.robots_pick_place()
-    print("operation complete")
-except KeyboardInterrupt:
-    print("\nOperation Interrupted")
-finally:
-    robot.shutdown()
-    time.sleep(2)
+    while teach_mode:
+        if ARDUINO_ON:
+            if keyboard.is_pressed('1'):
+                print("\n Aubo teach opening")
+                robot.teach_aubo()
+                print("Aubo teach closed.\n")
+                time.sleep(0.5)
+    
+            elif keyboard.is_pressed('2'):
+                print("\nCobot teach opening")
+                robot.teach_cobot()
+                print("myCobot teach closed.\n")
+                time.sleep(0.5)
+    
+            elif keyboard.is_pressed('space'):
+                print("\nstarting pick and place\n")
+                time.sleep(0.3)
+                teach_mode = False
+        else:
+            # Test Code as keyboard module not supported on macOS
+            if state == 0:
+                print("\n Aubo teach opening")
+                robot.teach_aubo()
+                plt.show(block=True)  # BLOCKS until window is closed
+ 
+                print("Aubo teach closed.\n")
+                time.sleep(0.5)
+                state = 1
+            elif state == 1:
+                print("\nCobot teach opening")
+                robot.teach_cobot()
+                plt.show(block=True)  # BLOCKS until window is closed
+ 
+                print("myCobot teach closed.\n")
+                time.sleep(0.5)
+                state = 2
+            elif state == 2:
+                time.sleep(0.3)
+                teach_mode = False
+	
+    robot.create_control_panel()
+    def run_simulation():
+        try:
+            robot.UR3_pick_place()
+            print("✓ UR3 complete")
+            robot.robots_pick_place()
+        except KeyboardInterrupt:
+            print("\n\n⚠ Operation Interrupted by user")
+        except Exception as e:
+            print(f"\n\n Error occurred: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            robot.shutdown()
+    
+    # Start simulation in separate thread
+    print("\nStarting simulation thread...")
+    sim_thread = threading.Thread(target=run_simulation, daemon=True)
+    sim_thread.start()
+    
+    # Run GUI in main thread (blocking)
+    print("Launching control panel GUI...")
+
+    
+    try:
+        robot.control_panel.show()
+    except KeyboardInterrupt:
+        print("\n\nShutting down...")
+    except Exception as e:
+        print(f"\n\nGUI Error: {e}")
+    finally:
+        robot.shutdown()
+        print("System shutdown complete.")
